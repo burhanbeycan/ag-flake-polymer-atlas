@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ag-flake-polymer-atlas"
+version = "0.1.0"
+description = "Reproducible adsorption calculations for oligomers on Ag(111) and Ag(100)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "ase>=3.24",
+    "numpy>=1.26",
+    "rdkit>=2024.3.1",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+gui = ["pandas>=2.1", "plotly>=6,<7", "streamlit>=1.50,<2"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ag-atlas = "ag_atlas.cli:main"
+ag-atlas-gui = "ag_atlas.gui:run_streamlit"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

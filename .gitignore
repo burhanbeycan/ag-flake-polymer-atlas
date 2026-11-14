@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+build/
+dist/
+coverage.xml
+.coverage
+runs/
+pseudos/
+qe-scratch/
+*.UPF
+*.upf
