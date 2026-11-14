@@ -1,6 +1,7 @@
 # Reproduce the adsorption study
 
-Install the atlas, Quantum ESPRESSO, and one consistent pseudopotential set.
+Install the atlas with `python -m pip install '.[publication]'` for plotting.
+Install Quantum ESPRESSO and one consistent pseudopotential set.
 The SSSP 1.3.0 PBE efficiency names in the example inputs are
 listed at https://archive.materialscloud.org/records/rcyfm-68h65.
 Use a shared absolute UPF directory on a compute cluster.
@@ -47,6 +48,9 @@ new named case so the altered protocol remains traceable.
 ```bash
 python -m ag_atlas.publication runs/production/cases.json runs/publication_tables --plot
 ```
+
+Collect each prepared case before running the analysis, including cases that
+have not yet run, to write the status CSVs.
 
 Keep failed and pending cases in the study index. Include completed model
 comparisons alongside the sensitivity to numerical settings and pose-pool

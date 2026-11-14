@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from ase.io import read
 
-from .workflow import PAIRS, _csv, _json, _read_manifest, _sha
+from .workflow import PAIRS, _csv, _job_path, _json, _read_manifest, _sha
 
 PURPOSES = {"smoke", "reference", "oligomer"}
 BASE = "case_id series purpose protocol_id geometry_kind qe_version".split()
@@ -89,10 +89,19 @@ def _load_case(spec):
     root = spec["run"]
     manifest = _read_manifest(root)
     tables = [_csv_index(root / name, "job_id") for name in ("adsorption_results.csv", "jobs.csv")]
+    planned = {job["job_id"]: job for job in manifest["jobs"]}
+    if len(planned) != len(manifest["jobs"]):
+        raise ValueError(f"Duplicate job IDs in {root / 'manifest.json'}")
+    input_errors = {}
+    for job_id, record in tables[1].items():
+        if record.get("status") == "converged" and job_id in planned:
+            try:
+                _job_path(root, planned[job_id])
+            except ValueError as error:
+                input_errors[job_id] = str(error)
     return {
         **spec, "manifest": manifest, "adsorption": tables[0], "jobs": tables[1],
-        "settings": manifest["protocol"]["settings"],
-        "planned": {job["job_id"]: job for job in manifest["jobs"]},
+        "settings": manifest["protocol"]["settings"], "planned": planned, "input_errors": input_errors,
     }
 
 
@@ -154,6 +163,8 @@ def _validated_energy(case, job, result):
         return None, "incompatible_reference", "Selected slab and molecule must be planned references."
     alternatives = [case["jobs"].get(candidate["job_id"], {}) for candidate in molecule_jobs]
     records = (complex_row, slab_row, *alternatives)
+    if any(record.get("job_id") in case["input_errors"] for record in records):
+        return None, "incompatible_input", "A converged calculation input is missing or has changed."
     if not version or any(
         r.get("status") != "converged" or r.get("protocol_id") != pid or r.get("qe_version") != version
         for r in records

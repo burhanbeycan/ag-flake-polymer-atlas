@@ -114,3 +114,14 @@ def test_benzene_height_and_smoke_scope(tmp_path, monkeypatch):
     assert float(row["carbon_height_ang"]) > 0
     assert row["purpose"] == "smoke"
     assert summary["reference_convergence"] == 0
+
+
+def test_publication_rejects_changed_input(tmp_path, monkeypatch):
+    run = plan(tmp_path, "edited-input", facets=["111"])
+    populate(monkeypatch, run, {"slab-111": -100., "mol-nh3-00": -10., "ads-nh3-111-01": -111.})
+    (run / "jobs" / "slab-111" / "pw.in").write_text("changed after collection")
+    output = tmp_path / "tables"
+    publication(specification(tmp_path, [case(run)]), output)
+    row, = rows(output / "pose_pool.csv")
+    assert row["status"] == "incompatible_input"
+    assert row["energy_ads_ev"] == ""
