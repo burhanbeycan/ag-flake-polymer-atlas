@@ -12,6 +12,12 @@ source .venv/bin/activate
 python -m pip install '.[gui]'
 ```
 
+For the managed Debian cloud machine, see the [real DFT setup and validation
+guide](docs/local_dft.md) for a rootless Quantum ESPRESSO/SSSP installation,
+five-job execution checks, and a resumable local study runner.
+The [real QE validation record](docs/validation/2026-11-14-qe.md) distinguishes
+completed execution checks from the unfinished publication study.
+
 ## Calculate a reference
 
 From the repository root, edit `examples/nh3.json` to point to your UPF directory and match your actual filenames. A relative `pseudo_dir` is resolved from the configuration file directory. You can also pass `--pseudo-dir /path/to/upf` to `plan`. The example uses NH₃ on both Ag facets.

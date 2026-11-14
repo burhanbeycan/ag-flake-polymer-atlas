@@ -1,5 +1,10 @@
 """Test QE's input and log contract without an installed pw.x."""
 
+import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -105,3 +110,80 @@ def test_timeout_is_retained_on_collect(tmp_path: Path) -> None:
     executable.chmod(0o755)
     result = run_job(tmp_path, str(executable), timeout=0.1)
     assert result.status == parse_output(tmp_path).status == "timeout"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups and file locks")
+def test_timeout_stops_launcher_children(tmp_path: Path) -> None:
+    import fcntl
+
+    prepare_complex(tmp_path)
+    # A file lock is released even if an orphan becomes a zombie. Checking a PID
+    # with kill(pid, 0) alone would incorrectly count such a child as still alive.
+    child = tmp_path / "rank.py"
+    child.write_text(
+        "import fcntl, os, signal, time\n"
+        "from pathlib import Path\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "with open('rank.lock', 'w') as handle:\n"
+        "    fcntl.flock(handle, fcntl.LOCK_EX)\n"
+        "    Path('rank.pid').write_text(str(os.getpid()))\n"
+        "    time.sleep(30)\n"
+    )
+    executable = tmp_path / "launcher.py"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import subprocess, sys, time\n"
+        "subprocess.Popen([sys.executable, 'rank.py'])\n"
+        "time.sleep(30)\n"
+    )
+    executable.chmod(0o755)
+    try:
+        result = run_job(tmp_path, str(executable), timeout=3)
+        assert result.status == parse_output(tmp_path).status == "timeout"
+        assert (tmp_path / "rank.pid").is_file(), "The child must start before timing out."
+        deadline = time.monotonic() + 2
+        with (tmp_path / "rank.lock").open() as handle:
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        pytest.fail("The timed-out launcher's child is still holding its lock.")
+                    time.sleep(0.01)
+    finally:
+        # Keep a failing regression from leaking the intentionally stubborn child.
+        if (tmp_path / "rank.pid").is_file():
+            try:
+                os.kill(int((tmp_path / "rank.pid").read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
+def test_interrupt_reaps_isolated_job(tmp_path: Path, monkeypatch) -> None:
+    prepare_complex(tmp_path)
+    executable = tmp_path / "fake_pw"
+    executable.write_text("#!/bin/sh\nexec sleep 30\n")
+    executable.chmod(0o755)
+    original_wait = subprocess.Popen.wait
+    interrupted = []
+
+    def interrupt_once(process, *args, **kwargs):
+        if not interrupted:
+            interrupted.append(process)
+            raise KeyboardInterrupt
+        return original_wait(process, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", interrupt_once)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_job(tmp_path, str(executable))
+        assert interrupted[0].returncode is not None
+        assert interrupted[0].returncode < 0
+        with pytest.raises(ProcessLookupError):
+            os.killpg(interrupted[0].pid, 0)
+    finally:
+        if interrupted and interrupted[0].returncode is None:
+            interrupted[0].kill()
+            original_wait(interrupted[0])

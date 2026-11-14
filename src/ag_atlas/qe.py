@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -251,6 +252,28 @@ def parse_output(folder: Path, returncode: int | None = None) -> Result:
     )
 
 
+def _terminate_job(process: subprocess.Popen) -> None:
+    """Reap a cancelled job and stop its local launcher process group."""
+    if os.name == "posix":
+        # MPI launchers may put ranks in separate groups. Let the launcher
+        # forward termination before killing stragglers in its own group.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=5)
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    else:
+        process.kill()
+    process.wait()
+
+
 def run_job(
     folder: Path, executable: str = "pw.x", timeout: float | None = None, threads: int = 1,
     *, launcher: tuple[str, ...] = (),
@@ -272,10 +295,17 @@ def run_job(
     try:
         with output_path.open("w", encoding="utf-8") as handle:
             try:
-                run = subprocess.run(
+                run = subprocess.Popen(
                     command, cwd=folder, stdout=handle, stderr=subprocess.STDOUT,
-                    env=environment, timeout=timeout, check=False,
+                    env=environment, start_new_session=os.name == "posix",
                 )
+                try:
+                    run.wait(timeout=timeout)
+                except BaseException:
+                    # The isolated session also needs explicit cleanup when a
+                    # terminal interrupt cancels the runner instead of a timeout.
+                    _terminate_job(run)
+                    raise
             except (OSError, subprocess.TimeoutExpired) as exc:
                 if isinstance(exc, subprocess.TimeoutExpired):
                     status, message = "timeout", f"pw.x exceeded the {timeout:g} s timeout."
