@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the tested Debian 13 amd64 QE/SSSP packages without root access.
+# Install the tested Debian 13 amd64 QE/SSSP/OpenBLAS packages without root.
 # No system APT configuration, packages, or repository files are modified.
 set -euo pipefail
 
@@ -24,7 +24,8 @@ keyring=/usr/share/keyrings/debian-archive-keyring.gpg
 
 apt_root="$prefix/apt"
 qe_root="$prefix/quantum-espresso"
-mkdir -p "$apt_root"/{etc/apt.conf.d,lists/partial,cache/archives/partial,packages} "$qe_root" "$prefix/bin"
+blas_root="$prefix/openblas"
+mkdir -p "$apt_root"/{etc/apt.conf.d,lists/partial,cache/archives/partial,packages} "$qe_root" "$blas_root" "$prefix/bin"
 touch "$apt_root/etc/main.conf"
 cat > "$apt_root/etc/sources.list" <<EOF
 deb [signed-by=$keyring] https://deb.debian.org/debian trixie main
@@ -49,29 +50,41 @@ export APT_CONFIG="$apt_root/apt.conf"
     /usr/bin/apt-get download \
         quantum-espresso=6.7-3+b1 \
         libscalapack-openmpi2.2=2.2.2-1 \
-        quantum-espresso-data-sssp=1.3.0-3
+        quantum-espresso-data-sssp=1.3.0-3 \
+        libopenblas0-pthread=0.3.29+ds-3
     # Pin artifacts as well as versions. These hashes were checked against the
     # signed Debian trixie package index. Never replace them to bypass a failure.
     sha256sum --check <<'EOF'
 44f9f38afc08fa53148cdddf8936464ba992b894a0843cc4aaf8749809b54bca  quantum-espresso_6.7-3+b1_amd64.deb
 19edff3e0d4d27b350965246ac93de8bc0328fa3c42f1b9a93048873ec2aeb7d  libscalapack-openmpi2.2_2.2.2-1_amd64.deb
 f479bb38fa365d1a189610f0c1cdc116771d4228e7322e943c3352ff61c8ebbf  quantum-espresso-data-sssp_1.3.0-3_all.deb
+e3541ee2c956c64383054ba116fb6ef86bbaf40035d64e1795185029fdcf0807  libopenblas0-pthread_0.3.29+ds-3_amd64.deb
 EOF
     for package in quantum-espresso_6.7-3+b1_amd64.deb \
         libscalapack-openmpi2.2_2.2.2-1_amd64.deb \
         quantum-espresso-data-sssp_1.3.0-3_all.deb; do
         dpkg-deb --extract "$package" "$qe_root"
     done
+    dpkg-deb --extract libopenblas0-pthread_0.3.29+ds-3_amd64.deb "$blas_root"
 )
 /usr/bin/apt-cache show quantum-espresso=6.7-3+b1 \
     libscalapack-openmpi2.2=2.2.2-1 quantum-espresso-data-sssp=1.3.0-3 \
+    libopenblas0-pthread=0.3.29+ds-3 \
     > "$apt_root/package-metadata.txt"
 
 cat > "$prefix/bin/pw.x" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 prefix=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-export LD_LIBRARY_PATH="$prefix/quantum-espresso/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+blas_threads=${ATLAS_BLAS_THREADS:-1}
+if [[ ! $blas_threads =~ ^[1-9][0-9]*$ ]]; then
+    echo "ATLAS_BLAS_THREADS must be a positive integer." >&2
+    exit 2
+fi
+# Supply optimized BLAS/LAPACK instead of relying on the host's reference BLAS.
+# One BLAS thread per MPI rank avoids oversubscribing the cloud CPU quota.
+export OPENBLAS_NUM_THREADS="$blas_threads"
+export LD_LIBRARY_PATH="$prefix/openblas/usr/lib/x86_64-linux-gnu/openblas-pthread:$prefix/quantum-espresso/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$prefix/quantum-espresso/usr/bin/pw.x" "$@"
 EOF
 chmod +x "$prefix/bin/pw.x"
@@ -92,7 +105,7 @@ export OMP_NUM_THREADS=${OMP_NUM_THREADS:-1}
 exec "$mpi_launcher" --bind-to none -np "$tasks" "$prefix/bin/pw.x" "$@"
 EOF
 chmod +x "$prefix/bin/pw-mpi.x"
-LD_LIBRARY_PATH="$qe_root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+LD_LIBRARY_PATH="$blas_root/usr/lib/x86_64-linux-gnu/openblas-pthread:$qe_root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
     ldd "$qe_root/usr/bin/pw.x" > "$prefix/qe-libraries.txt"
 if [[ $(< "$prefix/qe-libraries.txt") == *"not found"* ]]; then
     cat "$prefix/qe-libraries.txt" >&2
@@ -101,5 +114,6 @@ if [[ $(< "$prefix/qe-libraries.txt") == *"not found"* ]]; then
 fi
 echo "QE executable: $prefix/bin/pw.x"
 echo "MPI executable: $prefix/bin/pw-mpi.x (ATLAS_MPI_TASKS defaults to 4; OMP_NUM_THREADS defaults to 1)"
+echo "BLAS/LAPACK: OpenBLAS 0.3.29 (ATLAS_BLAS_THREADS defaults to 1 per MPI rank)"
 echo "SSSP 1.3.0 UPFs: $qe_root/usr/share/espresso/pseudo"
 echo "Run scripts/validate_qe.py for a real calculation; library resolution alone is not validation."

@@ -2,7 +2,7 @@
 
 The standard Python development installation does not include a DFT engine or
 pseudopotentials. On Debian 13 amd64, the tested rootless installer provides
-Quantum ESPRESSO 6.7 and SSSP 1.3.0 PBE efficiency:
+Quantum ESPRESSO 6.7, SSSP 1.3.0 PBE efficiency, and optimized OpenBLAS:
 
 ```bash
 bash scripts/setup_qe_debian.sh /workspace/tools
@@ -13,7 +13,8 @@ export PATH="/workspace/tools/bin:$PATH"
 It uses signed Debian package metadata, pins package versions and SHA256
 checksums, and extracts packages outside the checkout. TLS and signature
 verification remain enabled. It requires the host's Debian runtime libraries
-(MPI, FFTW, BLAS/LAPACK, gfortran); missing libraries cause installation to fail
+(MPI, FFTW, gfortran); BLAS/LAPACK are supplied by the pinned OpenBLAS package.
+Missing libraries cause installation to fail
 with a diagnostic. The supplied cloud machine has these libraries. Other
 operating systems should install Quantum ESPRESSO through their supported
 package manager. The installer does not require root or modify system files.
@@ -71,6 +72,9 @@ setting. The Debian QE build used here relies on MPI for CPU parallelism;
 raising `--threads` alone does not demonstrate use of more CPU cores. Allocate
 ranks and threads within the machine's CPU and memory limits. Do not run
 multiple full study drivers at once.
+The installer sets one OpenBLAS thread per MPI rank by default;
+`ATLAS_BLAS_THREADS` explicitly overrides this. The previous host reference
+BLAS was much slower than this optimized implementation.
 The example memory limit prevents a large rank from exhausting the entire
 machine. Jobs exceeding it remain failed and require more memory; the driver
 does not lower physical cutoffs or silently skip them. Change that limit only
@@ -97,6 +101,28 @@ inputs does not execute them. A small cloud machine may need a long time or
 more memory to finish this study; do not describe pending or failed jobs as
 converged. Monitor `pw.out`, the driver's progress report, and the case CSVs.
 The [publication guide](publication_runs.md) also supports SLURM arrays.
+
+This is a measured limitation: a 260-atom production input reports **305.73
+GiB** of dynamic memory and fails allocation under the 32-GiB machine's safety
+limit. Faster BLAS and a different MPI layout do not remove this memory
+requirement. The complete unchanged study cannot finish on this machine.
+See the [resource check](validation/2026-11-14-resources.md).
+
+To avoid repeating identical computations within one uninterrupted study run,
+add these options to the local driver:
+
+```bash
+--reuse-identical --engine-binary /workspace/tools/quantum-espresso/usr/bin/pw.x
+```
+
+This is opt-in. Only newly executed, converged outputs can enter the cache.
+Input bytes, starting geometry, pseudopotentials, engine identity and source
+output hashes must match. Every copy gets `reuse.json` with its origin and
+protocol IDs; prior failed outputs are archived. Existing completed outputs
+are never replaced. Conservative matching can reduce this plan from 803
+logical jobs to 562 actual executions if all converge in one invocation.
+Restarting retains completed outputs but does not seed the cache from old
+executions with an unverified runtime identity.
 
 After the intended cases finish, generate provenance-checked tables:
 
